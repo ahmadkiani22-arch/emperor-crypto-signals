@@ -8,77 +8,168 @@ const fmt = n =>
 
 let deferredInstall = null;
 
+// نصب برنامه
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   deferredInstall = e;
-  $('install').hidden = false;
+
+  if ($('install')) $('install').hidden = false;
 });
 
-$('install').addEventListener('click', async () => {
-  if (!deferredInstall) return;
+if ($('install')) {
+  $('install').addEventListener('click', async () => {
+    if (!deferredInstall) return;
 
-  deferredInstall.prompt();
-  await deferredInstall.userChoice;
+    deferredInstall.prompt();
+    await deferredInstall.userChoice;
 
-  deferredInstall = null;
-  $('install').hidden = true;
-});
-
-function mid(c, end, period) {
-  const w = c.slice(end - period + 1, end + 1);
-  return (Math.max(...w.map(x => x.h)) +
-          Math.min(...w.map(x => x.l))) / 2;
+    deferredInstall = null;
+    $('install').hidden = true;
+  });
 }
 
-function rsi(c, p = 14) {
-  let g = 0, l = 0;
-
-  for (let i = c.length - p; i < c.length; i++) {
-    const d = c[i].c - c[i - 1].c;
-    if (d >= 0) g += d;
-    else l -= d;
+// میانه بیشترین و کمترین قیمت در یک بازه
+function mid(c, end, period) {
+  if (
+    !Number.isInteger(end) ||
+    !Number.isInteger(period) ||
+    period < 1 ||
+    end < period - 1 ||
+    end >= c.length
+  ) {
+    return NaN;
   }
 
-  if (l === 0) return 100;
-  return 100 - 100 / (1 + g / l);
+  const w = c.slice(end - period + 1, end + 1);
+
+  return (
+    Math.max(...w.map(x => x.h)) +
+    Math.min(...w.map(x => x.l))
+  ) / 2;
 }
 
-function atr(c, p = 14) {
-  const a = [];
+// RSI استاندارد با هموارسازی وایلدر
+function rsi(c, p = 14) {
+  if (c.length <= p) return NaN;
 
-  for (let i = Math.max(1, c.length - p); i < c.length; i++) {
-    a.push(Math.max(
+  let gain = 0;
+  let loss = 0;
+
+  for (let i = 1; i <= p; i++) {
+    const d = c[i].c - c[i - 1].c;
+
+    gain += Math.max(d, 0);
+    loss += Math.max(-d, 0);
+  }
+
+  let avgGain = gain / p;
+  let avgLoss = loss / p;
+
+  for (let i = p + 1; i < c.length; i++) {
+    const d = c[i].c - c[i - 1].c;
+
+    avgGain =
+      (avgGain * (p - 1) + Math.max(d, 0)) / p;
+
+    avgLoss =
+      (avgLoss * (p - 1) + Math.max(-d, 0)) / p;
+  }
+
+  if (avgGain === 0 && avgLoss === 0) return 50;
+  if (avgLoss === 0) return 100;
+  if (avgGain === 0) return 0;
+
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+// میانگین دامنه واقعی ATR
+function atr(c, p = 14) {
+  if (c.length < p + 1) return NaN;
+
+  const values = [];
+
+  for (let i = c.length - p; i < c.length; i++) {
+    const tr = Math.max(
       c[i].h - c[i].l,
       Math.abs(c[i].h - c[i - 1].c),
       Math.abs(c[i].l - c[i - 1].c)
-    ));
+    );
+
+    values.push(tr);
   }
 
-  return a.length
-    ? a.reduce((x, y) => x + y, 0) / a.length
-    : 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-// دریافت کندل‌ها از API نمودار نوبیتکس
+// تبدیل تایم‌فریم به ثانیه
+function timeframeSeconds(res) {
+  const value = String(res).trim();
+
+  const known = {
+    '1m': 60,
+    '3m': 180,
+    '5m': 300,
+    '15m': 900,
+    '30m': 1800,
+    '45m': 2700,
+    '1h': 3600,
+    '2h': 7200,
+    '3h': 10800,
+    '4h': 14400,
+    '6h': 21600,
+    '8h': 28800,
+    '12h': 43200,
+    '1d': 86400,
+    '1w': 604800
+  };
+
+  if (known[value.toLowerCase()]) {
+    return known[value.toLowerCase()];
+  }
+
+  if (/^\d+$/.test(value)) {
+    const minutes = Number(value);
+
+    if (minutes > 0) return minutes * 60;
+  }
+
+  if (/^\d+D$/i.test(value)) {
+    return Number(value.slice(0, -1)) * 86400;
+  }
+
+  if (/^\d+W$/i.test(value)) {
+    return Number(value.slice(0, -1)) * 604800;
+  }
+
+  return 0;
+}
+
+// دریافت کندل از API نمودار نوبیتکس
 async function loadCandles(symbol, res) {
   const to = Math.floor(Date.now() / 1000);
 
   const url =
-    `https://apiv2.nobitex.ir/market/udf/history` +
+    'https://apiv2.nobitex.ir/market/udf/history' +
     `?symbol=${encodeURIComponent(symbol)}` +
     `&resolution=${encodeURIComponent(res)}` +
-    `&to=${to}&countback=200`;
+    `&to=${to}&countback=250`;
 
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, {
+    cache: 'no-store'
+  });
 
   if (!response.ok) {
-    throw new Error('خطای دریافت کندل: HTTP ' + response.status);
+    throw new Error(
+      'خطای دریافت کندل: HTTP ' + response.status
+    );
   }
 
   const j = await response.json();
 
-  if (j.s !== 'ok') {
-    throw new Error(j.errmsg || 'داده معتبر کندل دریافت نشد');
+  if (j.s !== 'ok' || !Array.isArray(j.t)) {
+    throw new Error(
+      j.errmsg || 'داده معتبر کندل دریافت نشد'
+    );
   }
 
   const c = j.t.map((t, i) => ({
@@ -89,67 +180,112 @@ async function loadCandles(symbol, res) {
     c: Number(j.c[i]),
     v: Number(j.v[i])
   })).filter(x =>
-    [x.t, x.o, x.h, x.l, x.c, x.v].every(Number.isFinite)
+    Number.isFinite(x.t) &&
+    Number.isFinite(x.o) &&
+    Number.isFinite(x.h) &&
+    Number.isFinite(x.l) &&
+    Number.isFinite(x.c) &&
+    Number.isFinite(x.v) &&
+    x.t > 0 &&
+    x.o > 0 &&
+    x.h > 0 &&
+    x.l > 0 &&
+    x.c > 0 &&
+    x.v >= 0 &&
+    x.h >= x.l &&
+    x.h >= Math.max(x.o, x.c) &&
+    x.l <= Math.min(x.o, x.c)
   );
 
-  if (c.length < 60) {
-    throw new Error('تعداد کندل‌های دریافتی کافی نیست: ' + c.length);
+  // مرتب‌سازی زمانی و حذف کندل‌های تکراری
+  const unique = [
+    ...new Map(c.map(x => [x.t, x])).values()
+  ].sort((a, b) => a.t - b.t);
+
+  if (unique.length < 100) {
+    throw new Error(
+      'تعداد کندل‌های دریافتی برای تحلیل کافی نیست: ' +
+      unique.length
+    );
   }
 
-  return c;
+  return unique;
 }
 
-// قیمت آخرین معامله در بازار نقدی BTC/USDT نوبیتکس
-async function getLiveBtcUsdt() {
-  const url =
-    'https://apiv2.nobitex.ir/market/stats' +
-    '?srcCurrency=btc&dstCurrency=usdt';
+// محاسبه ایچیموکو، RSI، حجم و مدیریت ریسک
+function analyze(raw, capital, riskPct, res) {
+  const step = timeframeSeconds(res);
 
-  const response = await fetch(url, { cache: 'no-store' });
-
-  if (!response.ok) {
-    throw new Error('دریافت قیمت لحظه‌ای ناموفق بود');
+  if (!step) {
+    throw new Error(
+      'تایم‌فریم ناشناخته است: ' + res
+    );
   }
 
-  const data = await response.json();
-  const market = data.stats?.['btc-usdt'];
-  const price = Number(market?.latest);
+  const now = Math.floor(Date.now() / 1000);
 
-  if (
-    data.status !== 'ok' ||
-    !Number.isFinite(price) ||
-    price <= 0
-  ) {
-    throw new Error('قیمت معتبر BTC/USDT دریافت نشد');
-  }
+  // فقط کندل‌هایی که زمان پایانشان گذشته است
+  const c = raw.filter(x => x.t + step <= now);
 
-  return price;
-}
-
-function analyze(c, capital, riskPct) {
-  // استفاده از کندل‌های بسته‌شده برای تحلیل
-  c = c.slice(0, -1);
-
-  if (c.length < 60) {
-    throw new Error('پس از کنار گذاشتن کندل جاری، داده کافی نیست');
+  if (c.length < 100) {
+    throw new Error(
+      'تعداد کندل‌های بسته‌شده کافی نیست: ' + c.length
+    );
   }
 
   const i = c.length - 1;
+
+  // قیمت مرجع تحلیل = بسته‌شدن آخرین کندل کامل
   const price = c[i].c;
 
+  // خطوط اصلی ایچیموکو
   const ten = mid(c, i, 9);
   const kij = mid(c, i, 26);
-  const spanA = (ten + kij) / 2;
-  const spanB = mid(c, i, 52);
+
+  // ابر قابل مشاهده در زمان کندل فعلی:
+  // سنکوها ۲۶ کندل پیش محاسبه شده‌اند.
+  const cloudIndex = i - 26;
+
+  const spanA = (
+    mid(c, cloudIndex, 9) +
+    mid(c, cloudIndex, 26)
+  ) / 2;
+
+  const spanB = mid(c, cloudIndex, 52);
 
   const top = Math.max(spanA, spanB);
   const bottom = Math.min(spanA, spanB);
 
-  const rv = rsi(c);
-  const volAvg =
-    c.slice(-21, -1).reduce((s, x) => s + x.v, 0) / 20;
+  const rv = rsi(c, 14);
+  const a = atr(c, 14);
 
-  const volRatio = volAvg ? c[i].v / volAvg : 0;
+  // حجم کندل اخیر در برابر ۲۰ کندل قبل از آن
+  const previousVolumes = c
+    .slice(i - 20, i)
+    .map(x => x.v);
+
+  const volAvg = previousVolumes.reduce(
+    (sum, value) => sum + value,
+    0
+  ) / previousVolumes.length;
+
+  const volRatio = volAvg > 0
+    ? c[i].v / volAvg
+    : 0;
+
+  if (
+    !Number.isFinite(price) ||
+    !Number.isFinite(ten) ||
+    !Number.isFinite(kij) ||
+    !Number.isFinite(spanA) ||
+    !Number.isFinite(spanB) ||
+    !Number.isFinite(rv) ||
+    !Number.isFinite(a)
+  ) {
+    throw new Error(
+      'محاسبه اندیکاتورها نامعتبر است'
+    );
+  }
 
   const buy =
     price > top &&
@@ -166,13 +302,25 @@ function analyze(c, capital, riskPct) {
     volRatio > 1.15;
 
   const reasons = [
-    `قیمت کندل نسبت به ابر: ${
-      price > top ? 'بالای ابر' :
-      price < bottom ? 'زیر ابر' : 'داخل ابر'
+    `قیمت بسته‌شدن کندل: ${fmt(price)}`,
+
+    `وضعیت قیمت نسبت به ابر: ${
+      price > top
+        ? 'بالای ابر'
+        : price < bottom
+          ? 'زیر ابر'
+          : 'داخل ابر'
     }`,
-    `تنکان ${ten > kij ? 'بالاتر از' : 'پایین‌تر یا برابر با'} کیجون است`,
-    `RSI(14): ${rv.toFixed(1)}`,
-    `حجم کندل بسته‌شده ${volRatio.toFixed(2)} برابر میانگین ۲۰ کندل است`
+
+    `تنکان ${ten > kij
+      ? 'بالاتر از'
+      : ten < kij
+        ? 'پایین‌تر از'
+        : 'برابر با'} کیجون است`,
+
+    `RSI(14) با روش وایلدر: ${rv.toFixed(2)}`,
+
+    `حجم کندل بسته‌شده ${volRatio.toFixed(2)} برابر میانگین ۲۰ کندل قبلی است`
   ];
 
   const out = {
@@ -188,10 +336,10 @@ function analyze(c, capital, riskPct) {
         : 'انتظار / بدون سیگنال'
   };
 
+  // بدون سیگنال، قیمت ورود و حد ضرر ارائه نمی‌شود
   if (!buy && !sell) return out;
 
   const isLong = buy;
-  const a = atr(c);
   const recent = c.slice(-12);
 
   const struct = isLong
@@ -204,21 +352,41 @@ function analyze(c, capital, riskPct) {
 
   const dist = Math.abs(price - stop);
 
-  if (!Number.isFinite(dist) || dist <= 0) {
-    return { ...out, signal: 'انتظار / حد ضرر نامعتبر' };
+  if (
+    !Number.isFinite(dist) ||
+    dist <= 0 ||
+    a <= 0
+  ) {
+    return {
+      ...out,
+      signal: 'انتظار / حد ضرر نامعتبر'
+    };
   }
 
   const riskFraction = dist / price;
-  const riskBudget =
-    capital * Math.max(0.1, Math.min(2, riskPct)) / 100;
+
+  // ریسک مجاز بر مبنای سرمایه واردشده
+  const safeCapital = Math.max(0, capital);
+
+  const safeRisk = Math.max(
+    0.1,
+    Math.min(2, riskPct)
+  );
+
+  const riskBudget = safeCapital * safeRisk / 100;
 
   out.entry = price;
   out.stop = stop;
-  out.t1 = price + (isLong ? 1 : -1) * 1.5 * dist;
-  out.t2 = price + (isLong ? 1 : -1) * 2 * dist;
 
+  out.t1 = price +
+    (isLong ? 1 : -1) * 1.5 * dist;
+
+  out.t2 = price +
+    (isLong ? 1 : -1) * 2 * dist;
+
+  // ارزش اسمی موقعیت با سقف اهرم ۲ برابر
   out.position = Math.min(
-    capital * 2,
+    safeCapital * 2,
     riskBudget / riskFraction
   );
 
@@ -227,48 +395,56 @@ function analyze(c, capital, riskPct) {
   return out;
 }
 
+// اجرای تحلیل
 $('analyze').addEventListener('click', async () => {
   $('analyze').disabled = true;
   $('status').className = 'status';
-  $('status').textContent = 'در حال دریافت داده‌های بازار…';
+  $('status').textContent =
+    'در حال دریافت داده‌های بازار…';
+
   $('err').textContent = '';
 
   try {
     const sym = $('symbol').value;
     const res = $('tf').value;
 
-    const capital = Math.max(0, +$('capital').value || 0);
+    const capital = Math.max(
+      0,
+      Number($('capital').value) || 0
+    );
+
     const risk = Math.max(
       0.1,
-      Math.min(2, +$('risk').value || 1)
+      Math.min(
+        2,
+        Number($('risk').value) || 1
+      )
     );
 
     const raw = await loadCandles(sym, res);
-    const p = analyze(raw, capital, risk);
 
-    // قیمت لحظه‌ای فقط برای جفت‌ارز BTC/USDT
-    // سایر نمادها از قیمت کندل تحلیل استفاده می‌کنند.
-    const isBtcUsdt =
-      sym.toLowerCase().replace(/[-_/]/g, '') === 'btcusdt';
+    const p = analyze(raw, capital, risk, res);
 
-    const livePrice = isBtcUsdt
-      ? await getLiveBtcUsdt()
-      : p.price;
+    // نمایش قیمت مرجع سیگنال، نه قیمت لحظه‌ای
+    $('price').textContent = fmt(p.price);
 
-    $('price').textContent = fmt(livePrice);
-    $('rsi').textContent = p.rsi.toFixed(1);
+    $('rsi').textContent = p.rsi.toFixed(2);
     $('vol').textContent = p.volRatio.toFixed(2) + '×';
+
     $('time').textContent =
       new Date(p.time * 1000).toLocaleString('fa-IR');
 
     $('status').textContent = p.signal;
+
     $('status').className =
       'status ' +
-      (p.signal.startsWith('خرید')
-        ? 'buy'
-        : p.signal.startsWith('فروش')
-          ? 'sell'
-          : '');
+      (
+        p.signal.startsWith('خرید')
+          ? 'buy'
+          : p.signal.startsWith('فروش')
+            ? 'sell'
+            : ''
+      );
 
     for (const [id, key] of [
       ['entry', 'entry'],
@@ -285,6 +461,7 @@ $('analyze').addEventListener('click', async () => {
         } واحد پول سرمایه واردشده. هزینه‌ها و تبدیل ارز لحاظ نشده است.`
       : 'اندازه موقعیت محاسبه نشد؛ ورود تأیید نشده است.';
 
+    // نمایش دلایل تحلیل با جلوگیری از درج HTML ناخواسته
     $('reasons').innerHTML = p.reasons.map(x =>
       '<li>' +
       x.replace(/[&<>"]/g, ch => ({
@@ -297,14 +474,24 @@ $('analyze').addEventListener('click', async () => {
     ).join('');
 
   } catch (e) {
-    $('status').textContent = 'تحلیل ناموفق — بدون سیگنال';
+    $('status').textContent =
+      'تحلیل ناموفق — بدون سیگنال';
+
+    $('status').className = 'status';
+
     $('err').textContent =
       (e.message || 'خطای ناشناخته') +
-      '؛ اتصال اینترنت و دسترسی API را بررسی کن.';
+      '؛ اتصال اینترنت، تایم‌فریم و دسترسی API را بررسی کن.';
 
     for (const id of [
-      'price', 'rsi', 'vol', 'time',
-      'entry', 'stop', 't1', 't2'
+      'price',
+      'rsi',
+      'vol',
+      'time',
+      'entry',
+      'stop',
+      't1',
+      't2'
     ]) {
       $(id).textContent = '—';
     }
@@ -313,11 +500,13 @@ $('analyze').addEventListener('click', async () => {
       'تا زمان دریافت داده معتبر، وارد معامله نشو.';
 
     $('reasons').innerHTML = '';
+
   } finally {
     $('analyze').disabled = false;
   }
 });
 
+// ثبت Service Worker
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
