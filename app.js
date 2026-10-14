@@ -39,3 +39,24 @@ $('analyze').addEventListener('click',async()=>{
  finally{$('analyze').disabled=false}
 });
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+loadCandles
+async function getLiveBtcUsdt() {
+  const url =
+    'https://apiv2.nobitex.ir/market/stats?srcCurrency=btc&dstCurrency=usdt';
+
+  const response = await fetch(url, { cache: 'no-store' });
+
+  if (!response.ok) {
+    throw new Error('دریافت قیمت لحظه‌ای ناموفق بود');
+  }
+
+  const data = await response.json();
+  const market = data.stats?.['btc-usdt'];
+  const price = Number(market?.latest);
+
+  if (data.status !== 'ok' || !Number.isFinite(price) || price <= 0) {
+    throw new Error('قیمت معتبر BTC/USDT دریافت نشد');
+  }
+
+  return price;
+}function analyze
